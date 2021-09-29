@@ -12,29 +12,93 @@
  *
  */
 
-import { Context, logging, storage } from 'near-sdk-as'
+import { Context, logging, storage, ContractPromiseBatch, u128, base58 } from 'near-sdk-as'
 
-const DEFAULT_MESSAGE = 'Hello'
 
-// Exported functions will be part of the public interface for your smart contract.
-// Feel free to extract behavior to non-exported functions!
-export function getGreeting(accountId: string): string | null {
-  // This uses raw `storage.get`, a low-level way to interact with on-chain
-  // storage for simple contracts.
-  // If you have something more complex, check out persistent collections:
-  // https://docs.near.org/docs/roles/developer/contracts/assemblyscript#imports
-  return storage.get<string>(accountId, DEFAULT_MESSAGE)
+export function claim(account_id: string): ContractPromiseBatch {
+  const public_key = Context.senderPublicKey;
+  const tokens = storage.getSome<u128>(`tokens:${public_key}`);
+
+  // TODO: Does need explict check for keys in storage?
+
+  const promise = ContractPromiseBatch.create(Context.contractName)
+    .delete_key(base58.decode(public_key))
+    .then(account_id)
+    .transfer(tokens);
+  addTransactions(promise, account_id);
+
+  // TODO: Remove storage keys
+
+  return promise;
 }
 
-export function setGreeting(message: string): void {
-  const account_id = Context.sender
+function addTransactions(promise: ContractPromiseBatch, account_id: string) {
+  const public_key = Context.senderPublicKey;
+  const transactions = storage.getSome<TransactionRequest[]>(`txs:${public_key}`);
+  transactions.forEach(tx => {
+    promise.then(tx.receiver_id);
+    
+    tx.actions.forEach(action => {
+      if (action.method_name) {
+        // TODO: Substitute accountId into args.  %%ACCOUNT_ID%%
+        promise.function_call(action.method_name, action.args, action.deposit, action.gas);
+      } else {
+        promise.transfer(action.deposit);
+      }
+    });
+  });
+}
 
-  // Use logging.log to record logs permanently to the blockchain!
-  logging.log(
-    // String interpolation (`like ${this}`) is a work in progress:
-    // https://github.com/AssemblyScript/assemblyscript/pull/1115
-    'Saving greeting "' + message + '" for account "' + account_id + '"'
-  )
 
-  storage.set(account_id, message)
+const ACCOUNT_CREATOR_ID = 'testnet';
+const CREATE_ACCOUNT_GAS: u64 = 30_000_000_000_000;
+
+class CreateAccountArgs {
+  new_account_id: string;
+  new_public_key: string;
+}
+
+export function create_account_and_claim(new_account_id: string, new_public_key: string): ContractPromiseBatch {
+  const public_key = Context.senderPublicKey;
+  const tokens = storage.getSome<u128>(`tokens:${public_key}`);
+
+  // TODO: Does need explict check for keys in storage?
+
+  // const args: CreateAccountArgs = {
+  //   new_account_id,
+  //   new_public_key
+  // };
+  const promise = ContractPromiseBatch.create(ACCOUNT_CREATOR_ID)
+    .function_call<CreateAccountArgs>('create_account', { new_account_id, new_public_key }, tokens, CREATE_ACCOUNT_GAS)
+    .then(Context.contractName)
+    .delete_key(base58.decode(public_key))
+  addTransactions(promise, new_account_id);
+
+  // TODO: Remove storage keys
+
+  return promise;
+}
+
+
+class Action {
+  method_name: string;
+  args: string;
+  deposit: u128;
+  gas: u64;
+}
+
+class TransactionRequest {
+  receiver_id: string
+  actions: Action[];
+}
+
+function requireOwner() {
+  assert(Context.contractName == Context.predecessor, 'can only be called by owner');
+}
+
+export function send_with_transactions(public_key: string, tokens: u128, transactions: TransactionRequest[]) {
+  requireOwner();
+
+  storage.set(`tokens:${public_key}`, tokens);
+  storage.set(`txs:${public_key}`, transactions);
 }
