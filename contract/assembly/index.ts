@@ -12,69 +12,73 @@
  *
  */
 
-import { Context, logging, storage, ContractPromiseBatch, u128, base58 } from 'near-sdk-as'
+import { Context, logging, storage, ContractPromiseBatch, u128, base58, base64 } from 'near-sdk-as'
 
+// TODO: Fix senderPublicKey (probably have either to deprecate or return raw buffer),
+// as this string representation not used anywhere (has extra byte in front)
+const public_key = base58.encode(base58.decode(Context.senderPublicKey).subarray(1));
 
 export function claim(account_id: string): ContractPromiseBatch {
-  const public_key = Context.senderPublicKey;
-  const tokens = storage.getSome<u128>(`tokens:${public_key}`);
-
-  // TODO: Does need explict check for keys in storage?
+  const tokens = getTokens();
 
   const promise = ContractPromiseBatch.create(Context.contractName)
     .delete_key(base58.decode(public_key))
     .then(account_id)
     .transfer(tokens);
   addTransactions(promise, account_id);
-
-  // TODO: Remove storage keys
+  removeDropInfo();
 
   return promise;
 }
 
-function addTransactions(promise: ContractPromiseBatch, account_id: string) {
-  const public_key = Context.senderPublicKey;
+function getTokens(): u128 {
+  return storage.getSome<u128>(`tokens:${public_key}`);
+}
+
+function removeDropInfo(): void {
+  storage.delete(`tokens:${public_key}`);
+  storage.delete(`txs:${public_key}`);
+}
+
+function addTransactions(promise: ContractPromiseBatch, account_id: string): void {
   const transactions = storage.getSome<TransactionRequest[]>(`txs:${public_key}`);
-  transactions.forEach(tx => {
+  for (let i = 0; i < transactions.length; i++) {
+    const tx = transactions[i];
     promise.then(tx.receiver_id);
     
-    tx.actions.forEach(action => {
+    for (let j = 0; j < tx.actions.length; j++) {
+      const action = tx.actions[j];
       if (action.method_name) {
         // TODO: Substitute accountId into args.  %%ACCOUNT_ID%%
         promise.function_call(action.method_name, action.args, action.deposit, action.gas);
       } else {
         promise.transfer(action.deposit);
       }
-    });
-  });
+    };
+  };
 }
 
-
 const ACCOUNT_CREATOR_ID = 'testnet';
-const CREATE_ACCOUNT_GAS: u64 = 30_000_000_000_000;
+const CREATE_ACCOUNT_GAS: u64 = 50_000_000_000_000;
 
+@nearBindgen
 class CreateAccountArgs {
   new_account_id: string;
   new_public_key: string;
 }
 
 export function create_account_and_claim(new_account_id: string, new_public_key: string): ContractPromiseBatch {
-  const public_key = Context.senderPublicKey;
-  const tokens = storage.getSome<u128>(`tokens:${public_key}`);
+  const tokens = getTokens();
 
-  // TODO: Does need explict check for keys in storage?
-
-  // const args: CreateAccountArgs = {
-  //   new_account_id,
-  //   new_public_key
-  // };
+  // let args: CreateAccountArgs = { new_account_id, new_public_key };
+  // logging.log(`args: ${args.new_account_id} ${args.new_public_key} ${base64.encode(encode(args))} ${base64.encode(args.encode())}`);
   const promise = ContractPromiseBatch.create(ACCOUNT_CREATOR_ID)
     .function_call<CreateAccountArgs>('create_account', { new_account_id, new_public_key }, tokens, CREATE_ACCOUNT_GAS)
     .then(Context.contractName)
     .delete_key(base58.decode(public_key))
+  // TODO: How to handle create_account failure?
   addTransactions(promise, new_account_id);
-
-  // TODO: Remove storage keys
+  removeDropInfo();
 
   return promise;
 }
@@ -92,11 +96,11 @@ class TransactionRequest {
   actions: Action[];
 }
 
-function requireOwner() {
+function requireOwner(): void {
   assert(Context.contractName == Context.predecessor, 'can only be called by owner');
 }
 
-export function send_with_transactions(public_key: string, tokens: u128, transactions: TransactionRequest[]) {
+export function send_with_transactions(public_key: string, tokens: u128, transactions: TransactionRequest[]): void {
   requireOwner();
 
   storage.set(`tokens:${public_key}`, tokens);
