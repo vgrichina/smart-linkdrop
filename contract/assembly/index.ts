@@ -16,13 +16,20 @@ import { Context, logging, storage, ContractPromiseBatch, u128, base58, base64 }
 
 // TODO: Fix senderPublicKey (probably have either to deprecate or return raw buffer),
 // as this string representation not used anywhere (has extra byte in front)
-const public_key = base58.encode(base58.decode(Context.senderPublicKey).subarray(1));
+let _public_key: string | null = null
+function getPublicKey(): string {
+  if (!_public_key) {
+    _public_key = base58.encode(base58.decode(Context.senderPublicKey).subarray(1));
+  }
+  return _public_key!;
+}
 
 export function claim(account_id: string): ContractPromiseBatch {
-  const tokens = getTokens();
+  requireSelf();
+  const tokens = getTokens(getPublicKey());
 
   const promise = ContractPromiseBatch.create(Context.contractName)
-    .delete_key(base58.decode(public_key))
+    .delete_key(base58.decode(getPublicKey()))
     .then(account_id)
     .transfer(tokens);
   addTransactions(promise, account_id);
@@ -31,17 +38,17 @@ export function claim(account_id: string): ContractPromiseBatch {
   return promise;
 }
 
-function getTokens(): u128 {
-  return storage.getSome<u128>(`tokens:${public_key}`);
+function getTokens(publicKey: string): u128 {
+  return storage.getSome<u128>(`tokens:${publicKey}`);
 }
 
 function removeDropInfo(): void {
-  storage.delete(`tokens:${public_key}`);
-  storage.delete(`txs:${public_key}`);
+  storage.delete(`tokens:${getPublicKey()}`);
+  storage.delete(`txs:${getPublicKey()}`);
 }
 
 function addTransactions(promise: ContractPromiseBatch, account_id: string): void {
-  const transactions = storage.getSome<TransactionRequest[]>(`txs:${public_key}`);
+  const transactions = storage.getSome<TransactionRequest[]>(`txs:${getPublicKey()}`);
   for (let i = 0; i < transactions.length; i++) {
     const tx = transactions[i];
     promise.then(tx.receiver_id);
@@ -68,19 +75,22 @@ class CreateAccountArgs {
 }
 
 export function create_account_and_claim(new_account_id: string, new_public_key: string): ContractPromiseBatch {
-  const tokens = getTokens();
+  requireSelf();
+  const tokens = getTokens(getPublicKey());
 
-  // let args: CreateAccountArgs = { new_account_id, new_public_key };
-  // logging.log(`args: ${args.new_account_id} ${args.new_public_key} ${base64.encode(encode(args))} ${base64.encode(args.encode())}`);
   const promise = ContractPromiseBatch.create(ACCOUNT_CREATOR_ID)
     .function_call<CreateAccountArgs>('create_account', { new_account_id, new_public_key }, tokens, CREATE_ACCOUNT_GAS)
     .then(Context.contractName)
-    .delete_key(base58.decode(public_key))
+    .delete_key(base58.decode(getPublicKey()))
   // TODO: How to handle create_account failure?
   addTransactions(promise, new_account_id);
   removeDropInfo();
 
   return promise;
+}
+
+export function get_key_balance(key: string): u128 {
+  return getTokens(key.replace('ed25519:', ''));
 }
 
 
@@ -96,12 +106,12 @@ class TransactionRequest {
   actions: Action[];
 }
 
-function requireOwner(): void {
-  assert(Context.contractName == Context.predecessor, 'can only be called by owner');
+function requireSelf(): void {
+  assert(Context.contractName == Context.predecessor, 'can only be called by self');
 }
 
 export function send_with_transactions(public_key: string, tokens: u128, transactions: TransactionRequest[]): void {
-  requireOwner();
+  requireSelf();
 
   storage.set(`tokens:${public_key}`, tokens);
   storage.set(`txs:${public_key}`, transactions);
