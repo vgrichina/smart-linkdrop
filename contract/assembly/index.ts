@@ -12,7 +12,7 @@
  *
  */
 
-import { Context, logging, storage, ContractPromiseBatch, u128, base58, base64 } from 'near-sdk-as'
+import { Context, logging, storage, ContractPromiseBatch, u128, base58, util } from 'near-sdk-as'
 
 // TODO: Fix senderPublicKey (probably have either to deprecate or return raw buffer),
 // as this string representation not used anywhere (has extra byte in front)
@@ -51,13 +51,13 @@ function addTransactions(promise: ContractPromiseBatch, account_id: string): voi
   const transactions = storage.getSome<TransactionRequest[]>(`txs:${getPublicKey()}`);
   for (let i = 0; i < transactions.length; i++) {
     const tx = transactions[i];
-    promise.then(tx.receiver_id);
+    promise = promise.then(tx.receiver_id);
     
     for (let j = 0; j < tx.actions.length; j++) {
       const action = tx.actions[j];
       if (action.method_name) {
-        // TODO: Substitute accountId into args.  %%ACCOUNT_ID%%
-        promise.function_call(action.method_name, action.args, action.deposit, action.gas);
+        const args = action.args.replaceAll('%%RECEIVER_ID%%', account_id);
+        promise.function_call(action.method_name, util.stringToBytes(args), action.deposit, action.gas);
       } else {
         promise.transfer(action.deposit);
       }
@@ -94,13 +94,15 @@ export function get_key_balance(key: string): u128 {
 }
 
 
+@nearBindgen
 class Action {
   method_name: string;
   args: string;
-  deposit: u128;
+  deposit: u128 = u128.Zero;
   gas: u64;
 }
 
+@nearBindgen
 class TransactionRequest {
   receiver_id: string
   actions: Action[];
